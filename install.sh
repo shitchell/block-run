@@ -72,7 +72,7 @@ echo
 mkdir -pv "$BIN_DIR" "$WRAPPER_DIR" "$CONFIG_DIR"
 
 # Install main script
-cp -v "$SCRIPT_DIR/block-run" "$BIN_DIR/block-run"
+cp -v "$SCRIPT_DIR/block-run.sh" "$BIN_DIR/block-run"
 chmod -v +x "$BIN_DIR/block-run"
 
 # Install wrappers
