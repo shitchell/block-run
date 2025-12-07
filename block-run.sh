@@ -31,6 +31,15 @@ CONFIG_FILES=(
     "/etc/block-run/config"
 )
 
+# Marker character for chunk display protocol (ASCII Group Separator)
+MARKER=$'\x1d'
+
+# Colors
+BOLD=$'\e[1m'
+CYAN=$'\e[36m'
+DIM=$'\e[2m'
+RESET=$'\e[0m'
+
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] <script>
@@ -43,8 +52,6 @@ Options:
   --help            Show this help message
 
 The interpreter is determined from the shebang line.
-Wrappers are invoked AS the target interpreter, so they should be written
-in their native language (e.g., Python wrapper in Python).
 
 Wrapper search paths:
 $(for d in "${WRAPPER_DIRS[@]}"; do echo "  - $d"; done)
@@ -116,6 +123,41 @@ find_wrapper() {
     return 1
 }
 
+# Map binary basename to pygmentize lexer
+get_lexer() {
+    local binary="$1"
+    local basename="${binary##*/}"
+
+    case "$basename" in
+        python|python3|python2) echo "python" ;;
+        bash|sh|zsh|ksh)        echo "bash" ;;
+        node|nodejs)            echo "javascript" ;;
+        mariadb|mysql|sql)      echo "sql" ;;
+        ruby|irb)               echo "ruby" ;;
+        perl)                   echo "perl" ;;
+        php)                    echo "php" ;;
+        lua)                    echo "lua" ;;
+        *)                      echo "text" ;;
+    esac
+}
+
+# Syntax highlight code
+highlight() {
+    local code="$1"
+    local lexer="$2"
+
+    if command -v pygmentize &>/dev/null && [[ "$lexer" != "text" ]]; then
+        echo "$code" | pygmentize -l "$lexer"
+    else
+        echo "$code"
+    fi
+}
+
+# Print separator line
+separator() {
+    echo "${DIM}─────────────────────────────────────────${RESET}"
+}
+
 # Split content into blocks (separated by blank lines)
 # Outputs each block as a null-terminated string for safe handling
 split_blocks_blank_lines() {
@@ -180,6 +222,34 @@ split_blocks_hierarchical() {
     fi
 }
 
+# Process wrapper output, handling chunk display markers
+process_output() {
+    local lexer="$1"
+    shift
+    local blocks=("$@")
+
+    local marker_regex="^${MARKER}\{([0-9]+)\}${MARKER}$"
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ $marker_regex ]]; then
+            local idx="${BASH_REMATCH[1]}"
+            local block_num=$((idx + 1))
+
+            # Print header
+            echo "${CYAN}# Block ${block_num}${RESET}"
+
+            # Print highlighted code
+            highlight "${blocks[$idx]}" "$lexer"
+
+            # Print separator
+            separator
+        else
+            # Pass through as-is
+            echo "$line"
+        fi
+    done
+}
+
 main() {
     local script=""
     local split_mode="blank_lines"
@@ -242,7 +312,16 @@ main() {
 
     [[ ${#blocks[@]} -gt 0 ]] || die "no blocks found in script"
 
-    # Dispatch to wrapper
+    # Get lexer for syntax highlighting
+    local lexer
+    lexer=$(get_lexer "$binary")
+
+    # Print file header
+    echo "${BOLD}${script}${RESET}"
+    echo "${DIM}${shebang}${RESET}"
+    echo
+
+    # Dispatch to wrapper and process output
     # Check if wrapper can be executed by the target binary by examining its shebang
     local wrapper_shebang
     wrapper_shebang=$(head -1 "$wrapper")
@@ -252,12 +331,10 @@ main() {
     if [[ "${wrapper_binary##*/}" == "${binary##*/}" ]] || \
        [[ "$wrapper_binary" == "$binary" ]]; then
         # Wrapper is written in the target language - invoke with target binary
-        # e.g., python3 /path/to/python-wrapper -- block1 block2 ...
-        exec "$binary" "$wrapper" -- "${blocks[@]}"
+        process_output "$lexer" "${blocks[@]}" < <("$binary" "$wrapper" -- "${blocks[@]}" 2>&1)
     else
         # Wrapper is a different language (e.g., bash wrapper for SQL)
-        # Execute wrapper directly using its own shebang
-        exec "$wrapper" -- "${blocks[@]}"
+        process_output "$lexer" "${blocks[@]}" < <("$wrapper" -- "${blocks[@]}" 2>&1)
     fi
 }
 

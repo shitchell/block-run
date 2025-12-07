@@ -1,43 +1,18 @@
 #!/usr/bin/env python3
 """
 Python wrapper for block-run.
-Executes blocks with exec() in a shared globals dict - state persists naturally.
-
-This script is invoked BY the target Python interpreter, so it runs in the
-correct version automatically.
-
-Usage: python3 this-wrapper -- block1 block2 ...
+Minimal: emits markers, executes blocks with exec() in shared globals.
+Dispatcher handles headers, highlighting, separators.
 """
-from __future__ import print_function
 import sys
 import traceback
 
-# ANSI colors
-CYAN = '\033[36m'
+# Marker character (ASCII Group Separator)
+MARKER = '\x1d'
+
+# Colors for exit code display
 RED = '\033[31m'
-DIM = '\033[2m'
 RESET = '\033[0m'
-
-def highlight_python(code):
-    """Syntax highlight if pygments available, otherwise return as-is."""
-    try:
-        from pygments import highlight
-        from pygments.lexers import PythonLexer
-        from pygments.formatters import TerminalFormatter
-        return highlight(code, PythonLexer(), TerminalFormatter()).rstrip()
-    except ImportError:
-        return code
-
-def separator():
-    return DIM + '─' * 41 + RESET
-
-def is_comment_only(block):
-    """Check if block contains only comments and whitespace."""
-    for line in block.split('\n'):
-        stripped = line.strip()
-        if stripped and not stripped.startswith('#'):
-            return False
-    return True
 
 def main():
     # Parse args - skip everything before '--'
@@ -55,27 +30,16 @@ def main():
         "__builtins__": __builtins__,
     }
 
-    for i, block in enumerate(args, 1):
-        # Handle comment-only blocks
-        if is_comment_only(block):
-            print(f"{CYAN}# Block {i} (comments only){RESET}")
-            print(highlight_python(block))
-            print(separator())
-            print()
-            continue
-
-        # Show block header and code
-        print(f"{CYAN}# Block {i}{RESET}")
-        print(highlight_python(block))
-        print(separator())
+    for idx, block in enumerate(args):
+        # Emit marker for dispatcher
+        print(f"{MARKER}{{{idx}}}{MARKER}")
 
         # Execute in shared context
         exit_code = 0
         try:
-            compiled = compile(block, f"<block {i}>", "exec")
+            compiled = compile(block, f"<block {idx + 1}>", "exec")
             exec(compiled, shared_globals)
         except SystemExit as e:
-            # Allow sys.exit() but capture the code
             exit_code = e.code if isinstance(e.code, int) else 1
         except Exception:
             traceback.print_exc()

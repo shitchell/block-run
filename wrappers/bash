@@ -2,115 +2,50 @@
 set -euo pipefail
 
 # Bash wrapper for block-run
-# Executes blocks in the current shell context - state persists naturally
-# NO REPLAY - each block runs once, variables/functions persist
+# Minimal: emits markers, executes blocks with eval
+# Dispatcher handles headers, highlighting, separators
 #
-# This script is invoked BY the target bash interpreter, so it runs in the
-# correct version automatically.
-#
-# Usage: bash this-wrapper -- block1 block2 ...
+# All variables use __br_ prefix to avoid namespace collisions with user code
 
-BLOCKS=()
+# Marker character (ASCII Group Separator)
+__br_MARKER=$'\x1d'
 
-# Colors
-CYAN=$'\e[36m'
-RED=$'\e[31m'
-DIM=$'\e[2m'
-RESET=$'\e[0m'
+# Colors for exit code display
+__br_RED=$'\e[31m'
+__br_RESET=$'\e[0m'
 
-usage() {
-    cat <<EOF
-Usage: bash $(basename "$0") -- <block1> [block2] ...
+# Parse arguments - skip everything before '--'
+__br_BLOCKS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --)
+            shift
+            __br_BLOCKS=("$@")
+            break
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
 
-Bash wrapper for block-run. Executes bash blocks sequentially
-in the current shell context. Variables and functions persist
-between blocks naturally - no replay needed.
+[[ ${#__br_BLOCKS[@]} -gt 0 ]] || { echo "error: no blocks provided" >&2; exit 1; }
 
-This script is not meant to be called directly.
-EOF
-    exit "${1:-0}"
-}
+__br_idx=0
+for __br_block in "${__br_BLOCKS[@]}"; do
+    # Emit marker for dispatcher
+    echo "${__br_MARKER}{${__br_idx}}${__br_MARKER}"
 
-die() {
-    echo "error: $*" >&2
-    exit 1
-}
+    # Execute in current shell context
+    set +e
+    eval "$__br_block"
+    __br_exit_code=$?
+    set -e
 
-# Syntax highlight bash if pygmentize is available
-highlight_bash() {
-    if command -v pygmentize &>/dev/null; then
-        pygmentize -l bash
-    else
-        cat
+    if [[ $__br_exit_code -ne 0 ]]; then
+        echo "${__br_RED}(exit code: $__br_exit_code)${__br_RESET}"
     fi
-}
 
-# Print a separator
-separator() {
-    echo "${DIM}─────────────────────────────────────────${RESET}"
-}
-
-# Check if block contains only comments and whitespace
-is_comment_only() {
-    local block="$1"
-    local stripped
-    stripped=$(echo "$block" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' || true)
-    [[ -z "$stripped" ]]
-}
-
-main() {
-    # Parse arguments - skip everything before '--'
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --help|-h)
-                usage 0
-                ;;
-            --)
-                shift
-                BLOCKS=("$@")
-                break
-                ;;
-            *)
-                # Skip unknown args before --
-                shift
-                ;;
-        esac
-    done
-
-    [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
-
-    local block_num=0
-
-    for block in "${BLOCKS[@]}"; do
-        ((++block_num))
-
-        # Handle comment-only blocks
-        if is_comment_only "$block"; then
-            echo "${CYAN}# Block $block_num (comments only)${RESET}"
-            echo "$block" | highlight_bash
-            separator
-            echo
-            continue
-        fi
-
-        # Show block header and highlighted code
-        echo "${CYAN}# Block $block_num${RESET}"
-        echo "$block" | highlight_bash
-        separator
-
-        # Execute in current shell context - state persists naturally!
-        # Temporarily disable errexit so we can capture the exit code
-        set +e
-        eval "$block"
-        local exit_code=$?
-        set -e
-
-        if [[ $exit_code -ne 0 ]]; then
-            echo "${RED}(exit code: $exit_code)${RESET}"
-        fi
-
-        echo
-    done
-}
-
-main "$@"
+    echo
+    ((__br_idx++))
+done

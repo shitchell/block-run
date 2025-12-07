@@ -1,43 +1,18 @@
 #!/usr/bin/env node
 /**
  * Node.js wrapper for block-run.
- * Executes blocks with vm.runInContext() in a shared context - state persists naturally.
- *
- * This script is invoked BY the target Node interpreter, so it runs in the
- * correct version automatically.
- *
- * Usage: node this-wrapper -- block1 block2 ...
+ * Minimal: emits markers, executes blocks with vm.runInContext().
+ * Dispatcher handles headers, highlighting, separators.
  */
 
 const vm = require('vm');
 
-// ANSI colors
-const CYAN = '\x1b[36m';
+// Marker character (ASCII Group Separator)
+const MARKER = '\x1d';
+
+// Colors for exit code display
 const RED = '\x1b[31m';
-const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
-
-function separator() {
-    return DIM + '─'.repeat(41) + RESET;
-}
-
-function isCommentOnly(block) {
-    // Check if block contains only comments and whitespace
-    const lines = block.split('\n');
-    for (const line of lines) {
-        const stripped = line.trim();
-        if (stripped && !stripped.startsWith('//') && !stripped.startsWith('/*') && !stripped.startsWith('*')) {
-            return false;
-        }
-    }
-    return true;
-}
-
-function highlightJs(code) {
-    // Could integrate with a syntax highlighter here
-    // For now, just return as-is
-    return code;
-}
 
 function main() {
     // Parse args - skip everything before '--'
@@ -70,28 +45,15 @@ function main() {
         exports: exports,
     });
 
-    args.forEach((block, index) => {
-        const blockNum = index + 1;
-
-        // Handle comment-only blocks
-        if (isCommentOnly(block)) {
-            console.log(`${CYAN}// Block ${blockNum} (comments only)${RESET}`);
-            console.log(highlightJs(block));
-            console.log(separator());
-            console.log();
-            return;
-        }
-
-        // Show block header and code
-        console.log(`${CYAN}// Block ${blockNum}${RESET}`);
-        console.log(highlightJs(block));
-        console.log(separator());
+    args.forEach((block, idx) => {
+        // Emit marker for dispatcher
+        console.log(`${MARKER}{${idx}}${MARKER}`);
 
         // Execute in shared context
         let exitCode = 0;
         try {
             vm.runInContext(block, context, {
-                filename: `<block ${blockNum}>`,
+                filename: `<block ${idx + 1}>`,
                 displayErrors: true,
             });
         } catch (err) {
