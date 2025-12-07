@@ -2,6 +2,30 @@
 
 Execute code files block-by-block, like a Jupyter notebook. Each block is syntax-highlighted, executed, and its output displayed before moving to the next block. Context (variables, state) is preserved across blocks.
 
+## Installation
+
+```bash
+# Clone the repo
+git clone https://github.com/shitchell/block-run.git
+cd block-run
+
+# Install globally (requires root)
+sudo ./install.sh
+
+# Or install locally (to ~/.local/bin, ~/.local/share, ~/.config)
+./install.sh --local
+```
+
+To uninstall:
+
+```bash
+# Remove local install (always runs)
+./uninstall.sh
+
+# Remove both local and global install
+sudo ./uninstall.sh
+```
+
 ## Usage
 
 ```bash
