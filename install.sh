@@ -48,6 +48,10 @@ if [[ "$LOCAL" == true ]]; then
     DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/block-run"
     CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/block-run"
 else
+    # Global install requires root
+    if [[ "$(id -u)" -ne 0 ]]; then
+        die "global install requires root (use: sudo ./install.sh or ./install.sh --local)"
+    fi
     BIN_DIR="/usr/local/bin"
     DATA_DIR="/usr/local/share/block-run"
     CONFIG_DIR="/etc/block-run"
