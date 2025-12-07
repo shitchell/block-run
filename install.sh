@@ -73,7 +73,7 @@ mkdir -pv "$BIN_DIR" "$WRAPPER_DIR" "$CONFIG_DIR"
 
 # Install main script
 cp -v "$SCRIPT_DIR/block-run.sh" "$BIN_DIR/block-run"
-chmod -v +x "$BIN_DIR/block-run"
+chmod -v 755 "$BIN_DIR/block-run"
 
 # Install wrappers
 for wrapper in "$SCRIPT_DIR"/wrappers/*; do
@@ -84,7 +84,7 @@ for wrapper in "$SCRIPT_DIR"/wrappers/*; do
         ln -sfv "$target" "$WRAPPER_DIR/$name"
     else
         cp -v "$wrapper" "$WRAPPER_DIR/$name"
-        chmod -v +x "$WRAPPER_DIR/$name"
+        chmod -v 755 "$WRAPPER_DIR/$name"
     fi
 done
 
