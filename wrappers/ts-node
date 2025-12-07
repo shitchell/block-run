@@ -1,0 +1,135 @@
+#!/usr/bin/env node
+/**
+ * TypeScript wrapper for block-run
+ * Minimal: emits markers, transpiles blocks to JS, executes with vm.runInContext()
+ * Dispatcher handles headers, highlighting, separators
+ *
+ * Requires: typescript package (npm install -g typescript)
+ */
+
+const vm = require('vm');
+const { execSync } = require('child_process');
+let ts;
+
+// Try to find typescript - check local, then global npm paths
+function findTypescript() {
+    // Try local require first
+    try {
+        return require('typescript');
+    } catch (e) {}
+
+    // Try common global paths
+    const globalPaths = [
+        '/usr/local/lib/node_modules/typescript',
+        '/usr/lib/node_modules/typescript',
+        process.env.HOME + '/.npm/lib/node_modules/typescript',
+    ];
+
+    // Also try to get the path from npm
+    try {
+        const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+        globalPaths.unshift(npmRoot + '/typescript');
+    } catch (e) {}
+
+    for (const p of globalPaths) {
+        try {
+            return require(p);
+        } catch (e) {}
+    }
+
+    return null;
+}
+
+ts = findTypescript();
+if (!ts) {
+    console.error('error: typescript not found');
+    console.error('Run: npm install -g typescript');
+    process.exit(1);
+}
+
+// Marker character (ASCII Group Separator)
+const MARKER = '\x1d';
+
+// Colors for exit code display
+const RED = '\x1b[31m';
+const RESET = '\x1b[0m';
+
+function transpile(code) {
+    const result = ts.transpileModule(code, {
+        compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2020,
+            strict: false,
+            esModuleInterop: true,
+        }
+    });
+    return result.outputText;
+}
+
+function main() {
+    // Parse args - skip everything before '--'
+    let args = process.argv.slice(2);
+    const dashIndex = args.indexOf('--');
+    if (dashIndex !== -1) {
+        args = args.slice(dashIndex + 1);
+    }
+
+    if (args.length === 0) {
+        console.error('error: no blocks provided');
+        process.exit(1);
+    }
+
+    // Create a persistent context with common globals
+    const context = vm.createContext({
+        console: console,
+        setTimeout: setTimeout,
+        setInterval: setInterval,
+        clearTimeout: clearTimeout,
+        clearInterval: clearInterval,
+        setImmediate: setImmediate,
+        clearImmediate: clearImmediate,
+        Buffer: Buffer,
+        process: process,
+        require: require,
+        __dirname: __dirname,
+        __filename: __filename,
+        module: module,
+        exports: exports,
+    });
+
+    args.forEach((block, idx) => {
+        // Emit marker for dispatcher
+        console.log(`${MARKER}{${idx}}${MARKER}`);
+
+        // Transpile TypeScript to JavaScript
+        let jsCode;
+        try {
+            jsCode = transpile(block);
+        } catch (err) {
+            console.error('TypeScript compilation error:', err.message);
+            console.log(`${RED}(exit code: 1)${RESET}`);
+            console.log();
+            return;
+        }
+
+        // Execute in shared context
+        let exitCode = 0;
+        try {
+            vm.runInContext(jsCode, context, {
+                filename: `<block ${idx + 1}>`,
+                displayErrors: true,
+            });
+        } catch (err) {
+            console.error(err.stack || err);
+            exitCode = 1;
+        }
+
+        if (exitCode !== 0) {
+            console.log(`${RED}(exit code: ${exitCode})${RESET}`);
+        }
+
+        console.log();
+    });
+}
+
+main();

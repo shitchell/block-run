@@ -132,7 +132,8 @@ get_lexer() {
         python|python3|python2) echo "python" ;;
         bash|sh|zsh|ksh)        echo "bash" ;;
         node|nodejs)            echo "javascript" ;;
-        mariadb|mysql|sql)      echo "sql" ;;
+        ts-node|tsx)            echo "typescript" ;;
+        mariadb|mysql|sqlite3)  echo "sql" ;;
         ruby|irb)               echo "ruby" ;;
         perl)                   echo "perl" ;;
         php)                    echo "php" ;;

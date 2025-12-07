@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# SQLite wrapper for block-run
+# Minimal: emits markers, executes SQL blocks via sqlite3
+# Dispatcher handles headers, highlighting, separators
+#
+# Configuration (in order of precedence):
+#   1. ~/.config/block-run/sqlite.conf (database=<path>)
+#   2. BLOCK_RUN_SQLITE_DATABASE environment variable
+#   3. Default: :memory:
+
+set -euo pipefail
+
+# Use __br_ prefix to avoid namespace collisions
+__br_MARKER=$'\x1d'
+__br_RED=$'\e[31m'
+__br_RESET=$'\e[0m'
+
+# Load config
+__br_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/block-run/sqlite.conf"
+__br_DATABASE=""
+
+if [[ -f "$__br_CONFIG_FILE" ]]; then
+    __br_DATABASE=$(grep -E '^database\s*=' "$__br_CONFIG_FILE" 2>/dev/null | sed 's/^database\s*=\s*//' | head -1)
+    # Expand ~ if present
+    __br_DATABASE="${__br_DATABASE/#\~/$HOME}"
+fi
+
+# Environment variable overrides config
+__br_DATABASE="${BLOCK_RUN_SQLITE_DATABASE:-$__br_DATABASE}"
+
+# Default to :memory:
+__br_DATABASE="${__br_DATABASE:-:memory:}"
+
+# If :memory:, use a temp file instead (so state persists across blocks)
+__br_TEMP_DB=""
+if [[ "$__br_DATABASE" == ":memory:" ]]; then
+    __br_TEMP_DB=$(mktemp --suffix=.sqlite3)
+    __br_DATABASE="$__br_TEMP_DB"
+    trap 'rm -f "$__br_TEMP_DB"' EXIT
+fi
+
+# Parse arguments - skip everything before '--'
+__br_BLOCKS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --)
+            shift
+            __br_BLOCKS=("$@")
+            break
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+[[ ${#__br_BLOCKS[@]} -gt 0 ]] || { echo "error: no blocks provided" >&2; exit 1; }
+
+# Check sqlite3 is available
+command -v sqlite3 &>/dev/null || { echo "error: sqlite3 not found" >&2; exit 1; }
+
+__br_idx=0
+for __br_block in "${__br_BLOCKS[@]}"; do
+    # Emit marker for dispatcher
+    echo "${__br_MARKER}{${__br_idx}}${__br_MARKER}"
+
+    # Execute SQL block
+    set +e
+    sqlite3 -header -column "$__br_DATABASE" <<< "$__br_block"
+    __br_exit_code=$?
+    set -e
+
+    if [[ $__br_exit_code -ne 0 ]]; then
+        echo "${__br_RED}(exit code: $__br_exit_code)${__br_RESET}"
+    fi
+
+    echo
+    __br_idx=$((__br_idx + 1))
+done

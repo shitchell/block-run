@@ -1,0 +1,46 @@
+#!/usr/bin/env php
+<?php
+/**
+ * PHP wrapper for block-run
+ * Minimal: emits markers, executes blocks with eval() in persistent scope
+ * Dispatcher handles headers, highlighting, separators
+ */
+
+define('MARKER', "\x1d");
+define('RED', "\e[31m");
+define('RESET', "\e[0m");
+
+// Parse arguments - skip everything before '--'
+$args = array_slice($argv, 1);
+$dash_idx = array_search('--', $args);
+$blocks = $dash_idx !== false ? array_slice($args, $dash_idx + 1) : [];
+
+if (empty($blocks)) {
+    fwrite(STDERR, "error: no blocks provided\n");
+    exit(1);
+}
+
+foreach ($blocks as $idx => $block) {
+    // Emit marker for dispatcher
+    echo MARKER . "{" . $idx . "}" . MARKER . "\n";
+
+    // Execute in current scope - variables persist between evals
+    $exit_code = 0;
+    try {
+        // Remove opening <?php tag if present (common mistake)
+        $block = preg_replace('/^<\?php\s*/i', '', $block);
+        $block = preg_replace('/^\?>\s*/', '', $block);
+
+        eval($block);
+    } catch (Throwable $e) {
+        fwrite(STDERR, get_class($e) . ": " . $e->getMessage() . "\n");
+        fwrite(STDERR, "  in " . $e->getFile() . ":" . $e->getLine() . "\n");
+        $exit_code = 1;
+    }
+
+    if ($exit_code !== 0) {
+        echo RED . "(exit code: $exit_code)" . RESET . "\n";
+    }
+
+    echo "\n";
+}

@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+# Ruby wrapper for block-run
+# Minimal: emits markers, executes blocks with eval in persistent binding
+# Dispatcher handles headers, highlighting, separators
+
+MARKER = "\x1d"
+RED = "\e[31m"
+RESET = "\e[0m"
+
+# Parse arguments - skip everything before '--'
+args = ARGV.dup
+dash_idx = args.index('--')
+blocks = dash_idx ? args[(dash_idx + 1)..-1] : []
+
+if blocks.empty?
+  STDERR.puts "error: no blocks provided"
+  exit 1
+end
+
+# Create a persistent binding for state
+persistent_binding = binding
+
+blocks.each_with_index do |block, idx|
+  # Emit marker for dispatcher
+  puts "#{MARKER}{#{idx}}#{MARKER}"
+
+  # Execute in persistent binding
+  exit_code = 0
+  begin
+    eval(block, persistent_binding, "<block #{idx + 1}>")
+  rescue SystemExit => e
+    exit_code = e.status
+  rescue Exception => e
+    STDERR.puts "#{e.class}: #{e.message}"
+    e.backtrace.each { |line| STDERR.puts "  #{line}" }
+    exit_code = 1
+  end
+
+  if exit_code != 0
+    puts "#{RED}(exit code: #{exit_code})#{RESET}"
+  end
+
+  puts
+end

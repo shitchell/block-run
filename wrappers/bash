@@ -47,5 +47,5 @@ for __br_block in "${__br_BLOCKS[@]}"; do
     fi
 
     echo
-    ((__br_idx++))
+    __br_idx=$((__br_idx + 1))
 done
