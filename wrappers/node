@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Node.js wrapper for block-run
+# Accumulates blocks and re-runs to maintain context
+
+BINARY=""
+BLOCKS=()
+TMPFILE=""  # For cleanup trap
+
+# Colors
+CYAN=$'\e[36m'
+RESET=$'\e[0m'
+DIM=$'\e[2m'
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") --binary <path> -- <block1> [block2] ...
+
+Node.js wrapper for block-run. Executes JavaScript blocks sequentially,
+maintaining state between blocks by re-running previous blocks.
+
+This script is not meant to be called directly.
+EOF
+    exit "${1:-0}"
+}
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+# Syntax highlight JavaScript if pygmentize is available
+highlight_js() {
+    if command -v pygmentize &>/dev/null; then
+        pygmentize -l javascript
+    else
+        cat
+    fi
+}
+
+# Print a separator
+separator() {
+    echo "${DIM}─────────────────────────────────────────${RESET}"
+}
+
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --binary)
+                BINARY="$2"
+                shift 2
+                ;;
+            --help|-h)
+                usage 0
+                ;;
+            --)
+                shift
+                BLOCKS=("$@")
+                break
+                ;;
+            *)
+                die "unexpected argument: $1"
+                ;;
+        esac
+    done
+
+    [[ -n "$BINARY" ]] || die "--binary is required"
+    [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
+
+    # Find node binary
+    local node_cmd="$BINARY"
+    if [[ ! -x "$node_cmd" ]]; then
+        node_cmd=$(command -v node || command -v nodejs) || die "no node found"
+    fi
+
+    TMPFILE=$(mktemp --suffix=.js)
+    trap 'rm -f "$TMPFILE"' EXIT
+
+    local block_num=0
+    local cumulative_code=""
+
+    for block in "${BLOCKS[@]}"; do
+        ((++block_num))
+
+        # Skip empty blocks or comment-only blocks
+        local stripped
+        stripped=$(echo "$block" | grep -v '^[[:space:]]*//' | grep -v '^[[:space:]]*$' || true)
+        if [[ -z "$stripped" ]]; then
+            # Still show the comments
+            echo "${CYAN}// Block $block_num (comments only)${RESET}"
+            echo "$block" | highlight_js
+            separator
+            echo
+            continue
+        fi
+
+        # Show block header and highlighted code
+        echo "${CYAN}// Block $block_num${RESET}"
+        echo "$block" | highlight_js
+        separator
+
+        # Build script: previous blocks (suppress output) + marker + current block
+        local marker="__BLOCK_OUTPUT_MARKER_${block_num}__"
+
+        {
+            # Previous blocks - temporarily replace console.log to suppress
+            if [[ -n "$cumulative_code" ]]; then
+                echo "const _origLog = console.log;"
+                echo "console.log = () => {};"
+                echo "$cumulative_code"
+                echo "console.log = _origLog;"
+            fi
+            # Marker
+            echo "console.log('$marker');"
+            # Current block
+            echo "$block"
+        } > "$TMPFILE"
+
+        # Run and extract only output after marker
+        local full_output
+        full_output=$("$node_cmd" "$TMPFILE" 2>&1) || true
+
+        # Extract output after the marker line
+        local output
+        output=$(echo "$full_output" | sed -n "/${marker}/,\$p" | tail -n +2)
+
+        if [[ -n "$output" ]]; then
+            echo "$output"
+        fi
+        echo
+
+        # Add this block to cumulative code for next iteration
+        cumulative_code+="$block"$'\n'
+    done
+}
+
+main "$@"

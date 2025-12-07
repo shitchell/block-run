@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Bash wrapper for block-run
+# Accumulates blocks and re-runs to maintain context
+# Note: This replays all previous blocks, so side effects (file writes, etc.) will repeat
+
+BINARY=""
+BLOCKS=()
+TMPFILE=""  # For cleanup trap
+
+# Colors
+CYAN=$'\e[36m'
+RESET=$'\e[0m'
+DIM=$'\e[2m'
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") --binary <path> -- <block1> [block2] ...
+
+Bash wrapper for block-run. Executes bash blocks sequentially,
+maintaining state between blocks by re-running previous blocks.
+
+WARNING: Side effects (file writes, etc.) will repeat on each block!
+
+This script is not meant to be called directly.
+EOF
+    exit "${1:-0}"
+}
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+# Syntax highlight bash if pygmentize is available
+highlight_bash() {
+    if command -v pygmentize &>/dev/null; then
+        pygmentize -l bash
+    else
+        cat
+    fi
+}
+
+# Print a separator
+separator() {
+    echo "${DIM}─────────────────────────────────────────${RESET}"
+}
+
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --binary)
+                BINARY="$2"
+                shift 2
+                ;;
+            --help|-h)
+                usage 0
+                ;;
+            --)
+                shift
+                BLOCKS=("$@")
+                break
+                ;;
+            *)
+                die "unexpected argument: $1"
+                ;;
+        esac
+    done
+
+    [[ -n "$BINARY" ]] || die "--binary is required"
+    [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
+
+    # Find bash binary
+    local bash_cmd="$BINARY"
+    if [[ ! -x "$bash_cmd" ]]; then
+        bash_cmd=$(command -v bash) || die "no bash found"
+    fi
+
+    TMPFILE=$(mktemp --suffix=.sh)
+    trap 'rm -f "$TMPFILE"' EXIT
+
+    local block_num=0
+    local cumulative_code=""
+
+    for block in "${BLOCKS[@]}"; do
+        ((++block_num))
+
+        # Skip empty blocks or comment-only blocks
+        local stripped
+        stripped=$(echo "$block" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' || true)
+        if [[ -z "$stripped" ]]; then
+            # Still show the comments
+            echo "${CYAN}# Block $block_num (comments only)${RESET}"
+            echo "$block" | highlight_bash
+            separator
+            echo
+            continue
+        fi
+
+        # Show block header and highlighted code
+        echo "${CYAN}# Block $block_num${RESET}"
+        echo "$block" | highlight_bash
+        separator
+
+        # Build script: previous blocks (suppress output) + marker + current block
+        local marker="__BLOCK_OUTPUT_MARKER_${block_num}__"
+
+        {
+            # Previous blocks - redirect stdout to /dev/null to suppress
+            if [[ -n "$cumulative_code" ]]; then
+                echo "{"
+                echo "$cumulative_code"
+                echo "} > /dev/null 2>&1"
+            fi
+            # Marker
+            echo "echo '$marker'"
+            # Current block
+            echo "$block"
+        } > "$TMPFILE"
+
+        # Run and extract only output after marker
+        local full_output
+        full_output=$("$bash_cmd" "$TMPFILE" 2>&1) || true
+
+        # Extract output after the marker line
+        local output
+        output=$(echo "$full_output" | sed -n "/${marker}/,\$p" | tail -n +2)
+
+        if [[ -n "$output" ]]; then
+            echo "$output"
+        fi
+        echo
+
+        # Add this block to cumulative code for next iteration
+        cumulative_code+="$block"$'\n'
+    done
+}
+
+main "$@"

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Python wrapper for block-run
+# Accumulates blocks and re-runs to maintain context
+
+BINARY=""
+BLOCKS=()
+TMPFILE=""  # For cleanup trap
+
+# Colors
+CYAN=$'\e[36m'
+RESET=$'\e[0m'
+DIM=$'\e[2m'
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") --binary <path> -- <block1> [block2] ...
+
+Python wrapper for block-run. Executes Python blocks sequentially,
+maintaining state between blocks by re-running previous blocks.
+
+This script is not meant to be called directly.
+EOF
+    exit "${1:-0}"
+}
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+# Syntax highlight Python if pygmentize is available
+highlight_python() {
+    if command -v pygmentize &>/dev/null; then
+        pygmentize -l python
+    else
+        cat
+    fi
+}
+
+# Print a separator
+separator() {
+    echo "${DIM}─────────────────────────────────────────${RESET}"
+}
+
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --binary)
+                BINARY="$2"
+                shift 2
+                ;;
+            --help|-h)
+                usage 0
+                ;;
+            --)
+                shift
+                BLOCKS=("$@")
+                break
+                ;;
+            *)
+                die "unexpected argument: $1"
+                ;;
+        esac
+    done
+
+    [[ -n "$BINARY" ]] || die "--binary is required"
+    [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
+
+    # Find python binary
+    local python_cmd="$BINARY"
+    if [[ ! -x "$python_cmd" ]]; then
+        python_cmd=$(command -v python3 || command -v python) || die "no python found"
+    fi
+
+    TMPFILE=$(mktemp --suffix=.py)
+    trap 'rm -f "$TMPFILE"' EXIT
+
+    local block_num=0
+    local cumulative_code=""
+
+    for block in "${BLOCKS[@]}"; do
+        ((++block_num))
+
+        # Skip empty blocks or comment-only blocks
+        local stripped
+        stripped=$(echo "$block" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' || true)
+        if [[ -z "$stripped" ]]; then
+            # Still show the comments
+            echo "${CYAN}# Block $block_num (comments only)${RESET}"
+            echo "$block" | highlight_python
+            separator
+            echo
+            continue
+        fi
+
+        # Show block header and highlighted code
+        echo "${CYAN}# Block $block_num${RESET}"
+        echo "$block" | highlight_python
+        separator
+
+        # Build script: previous blocks (suppress output) + marker + current block
+        # We use a unique marker to find where current output starts
+        local marker="__BLOCK_OUTPUT_MARKER_${block_num}__"
+
+        {
+            # Previous blocks - wrap prints in a null context to suppress
+            if [[ -n "$cumulative_code" ]]; then
+                echo "import sys, io"
+                echo "_old_stdout = sys.stdout"
+                echo "sys.stdout = io.StringIO()"
+                echo "$cumulative_code"
+                echo "sys.stdout = _old_stdout"
+            fi
+            # Marker
+            echo "print('$marker')"
+            # Current block
+            echo "$block"
+        } > "$TMPFILE"
+
+        # Run and extract only output after marker
+        local full_output
+        full_output=$("$python_cmd" "$TMPFILE" 2>&1) || true
+
+        # Extract output after the marker line
+        local output
+        output=$(echo "$full_output" | sed -n "/${marker}/,\$p" | tail -n +2)
+
+        if [[ -n "$output" ]]; then
+            echo "$output"
+        fi
+        echo
+
+        # Add this block to cumulative code for next iteration
+        cumulative_code+="$block"$'\n'
+    done
+}
+
+main "$@"
