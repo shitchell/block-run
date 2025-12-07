@@ -2,26 +2,25 @@
 set -euo pipefail
 
 # Bash wrapper for block-run
-# Accumulates blocks and re-runs to maintain context
-# Note: This replays all previous blocks, so side effects (file writes, etc.) will repeat
+# Executes blocks in the current shell context - state persists naturally
+# NO REPLAY - each block runs once, variables/functions persist
 
 BINARY=""
 BLOCKS=()
-TMPFILE=""  # For cleanup trap
 
 # Colors
 CYAN=$'\e[36m'
-RESET=$'\e[0m'
+RED=$'\e[31m'
 DIM=$'\e[2m'
+RESET=$'\e[0m'
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") --binary <path> -- <block1> [block2] ...
 
-Bash wrapper for block-run. Executes bash blocks sequentially,
-maintaining state between blocks by re-running previous blocks.
-
-WARNING: Side effects (file writes, etc.) will repeat on each block!
+Bash wrapper for block-run. Executes bash blocks sequentially
+in the current shell context. Variables and functions persist
+between blocks naturally - no replay needed.
 
 This script is not meant to be called directly.
 EOF
@@ -72,17 +71,7 @@ main() {
     [[ -n "$BINARY" ]] || die "--binary is required"
     [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
 
-    # Find bash binary
-    local bash_cmd="$BINARY"
-    if [[ ! -x "$bash_cmd" ]]; then
-        bash_cmd=$(command -v bash) || die "no bash found"
-    fi
-
-    TMPFILE=$(mktemp --suffix=.sh)
-    trap 'rm -f "$TMPFILE"' EXIT
-
     local block_num=0
-    local cumulative_code=""
 
     for block in "${BLOCKS[@]}"; do
         ((++block_num))
@@ -104,37 +93,18 @@ main() {
         echo "$block" | highlight_bash
         separator
 
-        # Build script: previous blocks (suppress output) + marker + current block
-        local marker="__BLOCK_OUTPUT_MARKER_${block_num}__"
+        # Execute in current shell context - state persists naturally!
+        # Temporarily disable errexit so we can capture the exit code
+        set +e
+        eval "$block"
+        local exit_code=$?
+        set -e
 
-        {
-            # Previous blocks - redirect stdout to /dev/null to suppress
-            if [[ -n "$cumulative_code" ]]; then
-                echo "{"
-                echo "$cumulative_code"
-                echo "} > /dev/null 2>&1"
-            fi
-            # Marker
-            echo "echo '$marker'"
-            # Current block
-            echo "$block"
-        } > "$TMPFILE"
-
-        # Run and extract only output after marker
-        local full_output
-        full_output=$("$bash_cmd" "$TMPFILE" 2>&1) || true
-
-        # Extract output after the marker line
-        local output
-        output=$(echo "$full_output" | sed -n "/${marker}/,\$p" | tail -n +2)
-
-        if [[ -n "$output" ]]; then
-            echo "$output"
+        if [[ $exit_code -ne 0 ]]; then
+            echo "${RED}(exit code: $exit_code)${RESET}"
         fi
-        echo
 
-        # Add this block to cumulative code for next iteration
-        cumulative_code+="$block"$'\n'
+        echo
     done
 }
 
