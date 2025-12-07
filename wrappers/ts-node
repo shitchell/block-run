@@ -27,10 +27,7 @@ function findTypescript() {
 
     // Also try to get the path from npm
     try {
-        const npmRoot = execSync('npm root -g', {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore']  // no stdin, capture stdout, ignore stderr
-        }).trim();
+        const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
         globalPaths.unshift(npmRoot + '/typescript');
     } catch (e) {}
 
