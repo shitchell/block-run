@@ -1,139 +1,110 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env node
+/**
+ * Node.js wrapper for block-run.
+ * Executes blocks with vm.runInContext() in a shared context - state persists naturally.
+ *
+ * This script is invoked BY the target Node interpreter, so it runs in the
+ * correct version automatically.
+ *
+ * Usage: node this-wrapper -- block1 block2 ...
+ */
 
-# Node.js wrapper for block-run
-# Accumulates blocks and re-runs to maintain context
+const vm = require('vm');
 
-BINARY=""
-BLOCKS=()
-TMPFILE=""  # For cleanup trap
+// ANSI colors
+const CYAN = '\x1b[36m';
+const RED = '\x1b[31m';
+const DIM = '\x1b[2m';
+const RESET = '\x1b[0m';
 
-# Colors
-CYAN=$'\e[36m'
-RESET=$'\e[0m'
-DIM=$'\e[2m'
-
-usage() {
-    cat <<EOF
-Usage: $(basename "$0") --binary <path> -- <block1> [block2] ...
-
-Node.js wrapper for block-run. Executes JavaScript blocks sequentially,
-maintaining state between blocks by re-running previous blocks.
-
-This script is not meant to be called directly.
-EOF
-    exit "${1:-0}"
+function separator() {
+    return DIM + '─'.repeat(41) + RESET;
 }
 
-die() {
-    echo "error: $*" >&2
-    exit 1
+function isCommentOnly(block) {
+    // Check if block contains only comments and whitespace
+    const lines = block.split('\n');
+    for (const line of lines) {
+        const stripped = line.trim();
+        if (stripped && !stripped.startsWith('//') && !stripped.startsWith('/*') && !stripped.startsWith('*')) {
+            return false;
+        }
+    }
+    return true;
 }
 
-# Syntax highlight JavaScript if pygmentize is available
-highlight_js() {
-    if command -v pygmentize &>/dev/null; then
-        pygmentize -l javascript
-    else
-        cat
-    fi
+function highlightJs(code) {
+    // Could integrate with a syntax highlighter here
+    // For now, just return as-is
+    return code;
 }
 
-# Print a separator
-separator() {
-    echo "${DIM}─────────────────────────────────────────${RESET}"
+function main() {
+    // Parse args - skip everything before '--'
+    let args = process.argv.slice(2);
+    const dashIndex = args.indexOf('--');
+    if (dashIndex !== -1) {
+        args = args.slice(dashIndex + 1);
+    }
+
+    if (args.length === 0) {
+        console.error('error: no blocks provided');
+        process.exit(1);
+    }
+
+    // Create a persistent context with common globals
+    const context = vm.createContext({
+        console: console,
+        setTimeout: setTimeout,
+        setInterval: setInterval,
+        clearTimeout: clearTimeout,
+        clearInterval: clearInterval,
+        setImmediate: setImmediate,
+        clearImmediate: clearImmediate,
+        Buffer: Buffer,
+        process: process,
+        require: require,
+        __dirname: __dirname,
+        __filename: __filename,
+        module: module,
+        exports: exports,
+    });
+
+    args.forEach((block, index) => {
+        const blockNum = index + 1;
+
+        // Handle comment-only blocks
+        if (isCommentOnly(block)) {
+            console.log(`${CYAN}// Block ${blockNum} (comments only)${RESET}`);
+            console.log(highlightJs(block));
+            console.log(separator());
+            console.log();
+            return;
+        }
+
+        // Show block header and code
+        console.log(`${CYAN}// Block ${blockNum}${RESET}`);
+        console.log(highlightJs(block));
+        console.log(separator());
+
+        // Execute in shared context
+        let exitCode = 0;
+        try {
+            vm.runInContext(block, context, {
+                filename: `<block ${blockNum}>`,
+                displayErrors: true,
+            });
+        } catch (err) {
+            console.error(err.stack || err);
+            exitCode = 1;
+        }
+
+        if (exitCode !== 0) {
+            console.log(`${RED}(exit code: ${exitCode})${RESET}`);
+        }
+
+        console.log();
+    });
 }
 
-main() {
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --binary)
-                BINARY="$2"
-                shift 2
-                ;;
-            --help|-h)
-                usage 0
-                ;;
-            --)
-                shift
-                BLOCKS=("$@")
-                break
-                ;;
-            *)
-                die "unexpected argument: $1"
-                ;;
-        esac
-    done
-
-    [[ -n "$BINARY" ]] || die "--binary is required"
-    [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
-
-    # Find node binary
-    local node_cmd="$BINARY"
-    if [[ ! -x "$node_cmd" ]]; then
-        node_cmd=$(command -v node || command -v nodejs) || die "no node found"
-    fi
-
-    TMPFILE=$(mktemp --suffix=.js)
-    trap 'rm -f "$TMPFILE"' EXIT
-
-    local block_num=0
-    local cumulative_code=""
-
-    for block in "${BLOCKS[@]}"; do
-        ((++block_num))
-
-        # Skip empty blocks or comment-only blocks
-        local stripped
-        stripped=$(echo "$block" | grep -v '^[[:space:]]*//' | grep -v '^[[:space:]]*$' || true)
-        if [[ -z "$stripped" ]]; then
-            # Still show the comments
-            echo "${CYAN}// Block $block_num (comments only)${RESET}"
-            echo "$block" | highlight_js
-            separator
-            echo
-            continue
-        fi
-
-        # Show block header and highlighted code
-        echo "${CYAN}// Block $block_num${RESET}"
-        echo "$block" | highlight_js
-        separator
-
-        # Build script: previous blocks (suppress output) + marker + current block
-        local marker="__BLOCK_OUTPUT_MARKER_${block_num}__"
-
-        {
-            # Previous blocks - temporarily replace console.log to suppress
-            if [[ -n "$cumulative_code" ]]; then
-                echo "const _origLog = console.log;"
-                echo "console.log = () => {};"
-                echo "$cumulative_code"
-                echo "console.log = _origLog;"
-            fi
-            # Marker
-            echo "console.log('$marker');"
-            # Current block
-            echo "$block"
-        } > "$TMPFILE"
-
-        # Run and extract only output after marker
-        local full_output
-        full_output=$("$node_cmd" "$TMPFILE" 2>&1) || true
-
-        # Extract output after the marker line
-        local output
-        output=$(echo "$full_output" | sed -n "/${marker}/,\$p" | tail -n +2)
-
-        if [[ -n "$output" ]]; then
-            echo "$output"
-        fi
-        echo
-
-        # Add this block to cumulative code for next iteration
-        cumulative_code+="$block"$'\n'
-    done
-}
-
-main "$@"
+main();

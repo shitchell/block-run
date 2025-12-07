@@ -1,141 +1,90 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""
+Python wrapper for block-run.
+Executes blocks with exec() in a shared globals dict - state persists naturally.
 
-# Python wrapper for block-run
-# Accumulates blocks and re-runs to maintain context
+This script is invoked BY the target Python interpreter, so it runs in the
+correct version automatically.
 
-BINARY=""
-BLOCKS=()
-TMPFILE=""  # For cleanup trap
+Usage: python3 this-wrapper -- block1 block2 ...
+"""
+from __future__ import print_function
+import sys
+import traceback
 
-# Colors
-CYAN=$'\e[36m'
-RESET=$'\e[0m'
-DIM=$'\e[2m'
+# ANSI colors
+CYAN = '\033[36m'
+RED = '\033[31m'
+DIM = '\033[2m'
+RESET = '\033[0m'
 
-usage() {
-    cat <<EOF
-Usage: $(basename "$0") --binary <path> -- <block1> [block2] ...
+def highlight_python(code):
+    """Syntax highlight if pygments available, otherwise return as-is."""
+    try:
+        from pygments import highlight
+        from pygments.lexers import PythonLexer
+        from pygments.formatters import TerminalFormatter
+        return highlight(code, PythonLexer(), TerminalFormatter()).rstrip()
+    except ImportError:
+        return code
 
-Python wrapper for block-run. Executes Python blocks sequentially,
-maintaining state between blocks by re-running previous blocks.
+def separator():
+    return DIM + '─' * 41 + RESET
 
-This script is not meant to be called directly.
-EOF
-    exit "${1:-0}"
-}
+def is_comment_only(block):
+    """Check if block contains only comments and whitespace."""
+    for line in block.split('\n'):
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#'):
+            return False
+    return True
 
-die() {
-    echo "error: $*" >&2
-    exit 1
-}
+def main():
+    # Parse args - skip everything before '--'
+    args = sys.argv[1:]
+    if '--' in args:
+        args = args[args.index('--') + 1:]
 
-# Syntax highlight Python if pygmentize is available
-highlight_python() {
-    if command -v pygmentize &>/dev/null; then
-        pygmentize -l python
-    else
-        cat
-    fi
-}
+    if not args:
+        print("error: no blocks provided", file=sys.stderr)
+        sys.exit(1)
 
-# Print a separator
-separator() {
-    echo "${DIM}─────────────────────────────────────────${RESET}"
-}
+    # Shared globals dict - state persists across all blocks
+    shared_globals = {
+        "__name__": "__main__",
+        "__builtins__": __builtins__,
+    }
 
-main() {
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --binary)
-                BINARY="$2"
-                shift 2
-                ;;
-            --help|-h)
-                usage 0
-                ;;
-            --)
-                shift
-                BLOCKS=("$@")
-                break
-                ;;
-            *)
-                die "unexpected argument: $1"
-                ;;
-        esac
-    done
-
-    [[ -n "$BINARY" ]] || die "--binary is required"
-    [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
-
-    # Find python binary
-    local python_cmd="$BINARY"
-    if [[ ! -x "$python_cmd" ]]; then
-        python_cmd=$(command -v python3 || command -v python) || die "no python found"
-    fi
-
-    TMPFILE=$(mktemp --suffix=.py)
-    trap 'rm -f "$TMPFILE"' EXIT
-
-    local block_num=0
-    local cumulative_code=""
-
-    for block in "${BLOCKS[@]}"; do
-        ((++block_num))
-
-        # Skip empty blocks or comment-only blocks
-        local stripped
-        stripped=$(echo "$block" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' || true)
-        if [[ -z "$stripped" ]]; then
-            # Still show the comments
-            echo "${CYAN}# Block $block_num (comments only)${RESET}"
-            echo "$block" | highlight_python
-            separator
-            echo
+    for i, block in enumerate(args, 1):
+        # Handle comment-only blocks
+        if is_comment_only(block):
+            print(f"{CYAN}# Block {i} (comments only){RESET}")
+            print(highlight_python(block))
+            print(separator())
+            print()
             continue
-        fi
 
-        # Show block header and highlighted code
-        echo "${CYAN}# Block $block_num${RESET}"
-        echo "$block" | highlight_python
-        separator
+        # Show block header and code
+        print(f"{CYAN}# Block {i}{RESET}")
+        print(highlight_python(block))
+        print(separator())
 
-        # Build script: previous blocks (suppress output) + marker + current block
-        # We use a unique marker to find where current output starts
-        local marker="__BLOCK_OUTPUT_MARKER_${block_num}__"
+        # Execute in shared context
+        exit_code = 0
+        try:
+            compiled = compile(block, f"<block {i}>", "exec")
+            exec(compiled, shared_globals)
+        except SystemExit as e:
+            # Allow sys.exit() but capture the code
+            exit_code = e.code if isinstance(e.code, int) else 1
+        except Exception:
+            traceback.print_exc()
+            exit_code = 1
 
-        {
-            # Previous blocks - wrap prints in a null context to suppress
-            if [[ -n "$cumulative_code" ]]; then
-                echo "import sys, io"
-                echo "_old_stdout = sys.stdout"
-                echo "sys.stdout = io.StringIO()"
-                echo "$cumulative_code"
-                echo "sys.stdout = _old_stdout"
-            fi
-            # Marker
-            echo "print('$marker')"
-            # Current block
-            echo "$block"
-        } > "$TMPFILE"
+        if exit_code != 0:
+            print(f"{RED}(exit code: {exit_code}){RESET}")
 
-        # Run and extract only output after marker
-        local full_output
-        full_output=$("$python_cmd" "$TMPFILE" 2>&1) || true
+        print()
 
-        # Extract output after the marker line
-        local output
-        output=$(echo "$full_output" | sed -n "/${marker}/,\$p" | tail -n +2)
-
-        if [[ -n "$output" ]]; then
-            echo "$output"
-        fi
-        echo
-
-        # Add this block to cumulative code for next iteration
-        cumulative_code+="$block"$'\n'
-    done
-}
-
-main "$@"
+if __name__ == "__main__":
+    main()

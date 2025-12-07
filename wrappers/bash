@@ -4,8 +4,12 @@ set -euo pipefail
 # Bash wrapper for block-run
 # Executes blocks in the current shell context - state persists naturally
 # NO REPLAY - each block runs once, variables/functions persist
+#
+# This script is invoked BY the target bash interpreter, so it runs in the
+# correct version automatically.
+#
+# Usage: bash this-wrapper -- block1 block2 ...
 
-BINARY=""
 BLOCKS=()
 
 # Colors
@@ -16,7 +20,7 @@ RESET=$'\e[0m'
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --binary <path> -- <block1> [block2] ...
+Usage: bash $(basename "$0") -- <block1> [block2] ...
 
 Bash wrapper for block-run. Executes bash blocks sequentially
 in the current shell context. Variables and functions persist
@@ -46,14 +50,18 @@ separator() {
     echo "${DIM}─────────────────────────────────────────${RESET}"
 }
 
+# Check if block contains only comments and whitespace
+is_comment_only() {
+    local block="$1"
+    local stripped
+    stripped=$(echo "$block" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' || true)
+    [[ -z "$stripped" ]]
+}
+
 main() {
-    # Parse arguments
+    # Parse arguments - skip everything before '--'
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --binary)
-                BINARY="$2"
-                shift 2
-                ;;
             --help|-h)
                 usage 0
                 ;;
@@ -63,12 +71,12 @@ main() {
                 break
                 ;;
             *)
-                die "unexpected argument: $1"
+                # Skip unknown args before --
+                shift
                 ;;
         esac
     done
 
-    [[ -n "$BINARY" ]] || die "--binary is required"
     [[ ${#BLOCKS[@]} -gt 0 ]] || die "no blocks provided"
 
     local block_num=0
@@ -76,11 +84,8 @@ main() {
     for block in "${BLOCKS[@]}"; do
         ((++block_num))
 
-        # Skip empty blocks or comment-only blocks
-        local stripped
-        stripped=$(echo "$block" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' || true)
-        if [[ -z "$stripped" ]]; then
-            # Still show the comments
+        # Handle comment-only blocks
+        if is_comment_only "$block"; then
             echo "${CYAN}# Block $block_num (comments only)${RESET}"
             echo "$block" | highlight_bash
             separator

@@ -43,6 +43,8 @@ Options:
   --help            Show this help message
 
 The interpreter is determined from the shebang line.
+Wrappers are invoked AS the target interpreter, so they should be written
+in their native language (e.g., Python wrapper in Python).
 
 Wrapper search paths:
 $(for d in "${WRAPPER_DIRS[@]}"; do echo "  - $d"; done)
@@ -241,7 +243,22 @@ main() {
     [[ ${#blocks[@]} -gt 0 ]] || die "no blocks found in script"
 
     # Dispatch to wrapper
-    exec "$wrapper" --binary "$binary" -- "${blocks[@]}"
+    # Check if wrapper can be executed by the target binary by examining its shebang
+    local wrapper_shebang
+    wrapper_shebang=$(head -1 "$wrapper")
+    local wrapper_binary
+    wrapper_binary=$(parse_shebang "$wrapper_shebang")
+
+    if [[ "${wrapper_binary##*/}" == "${binary##*/}" ]] || \
+       [[ "$wrapper_binary" == "$binary" ]]; then
+        # Wrapper is written in the target language - invoke with target binary
+        # e.g., python3 /path/to/python-wrapper -- block1 block2 ...
+        exec "$binary" "$wrapper" -- "${blocks[@]}"
+    else
+        # Wrapper is a different language (e.g., bash wrapper for SQL)
+        # Execute wrapper directly using its own shebang
+        exec "$wrapper" -- "${blocks[@]}"
+    fi
 }
 
 main "$@"
