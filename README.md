@@ -2,6 +2,69 @@
 
 Execute code files block-by-block, like a Jupyter notebook. Each block is syntax-highlighted, executed, and its output displayed before moving to the next block. Context (variables, state) is preserved across blocks.
 
+## Purpose
+
+This tool is primarily designed as a **teaching and learning aid**. It helps instructors walk through code step-by-step during lessons, and helps learners see exactly how each piece of code builds on the previous one. By showing code and output together in digestible chunks, it makes it easier to understand how programs flow and how state evolves.
+
+## Example Output
+
+Given a script like this:
+
+```python
+#!/usr/bin/env python3
+
+# Block 1: Define some data
+name = "Alice"
+scores = [85, 92, 78, 96]
+print(f"Student: {name}")
+
+# Block 2: Calculate statistics
+average = sum(scores) / len(scores)
+print(f"Average score: {average:.1f}")
+
+# Block 3: Determine grade
+if average >= 90:
+    grade = "A"
+elif average >= 80:
+    grade = "B"
+else:
+    grade = "C"
+print(f"Final grade: {grade}")
+```
+
+Running `block-run script.py` produces:
+
+```
+script.py
+#!/usr/bin/env python3
+
+# Block 1: Define some data
+name = "Alice"
+scores = [85, 92, 78, 96]
+print(f"Student: {name}")
+─────────────────────────────────────────
+Student: Alice
+
+# Block 2: Calculate statistics
+average = sum(scores) / len(scores)
+print(f"Average score: {average:.1f}")
+─────────────────────────────────────────
+Average score: 87.8
+
+# Block 3: Determine grade
+if average >= 90:
+    grade = "A"
+elif average >= 80:
+    grade = "B"
+else:
+    grade = "C"
+print(f"Final grade: {grade}")
+─────────────────────────────────────────
+Final grade: B
+```
+
+Notice how variables like `scores` and `average` carry over between blocks, just like in a Jupyter notebook.
+
 ## Installation
 
 ```bash
