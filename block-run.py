@@ -3,7 +3,8 @@
 block-run: Execute code files block-by-block, like a notebook.
 
 Blocks are separated by blank lines. Each block is passed to a
-language-specific wrapper which handles syntax highlighting and execution.
+language-specific wrapper which handles execution. This script handles
+syntax highlighting and output formatting.
 """
 
 import os
@@ -11,6 +12,7 @@ import re
 import sys
 import shutil
 import argparse
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +40,38 @@ else:
         XDG_CONFIG_HOME / "block-run" / "config",
         Path("/etc/block-run/config"),
     ]
+
+# Marker character for chunk display protocol (ASCII Group Separator)
+MARKER = "\x1d"
+
+# Colors
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+# Lexer mappings for syntax highlighting
+LEXER_MAP = {
+    "python": "python",
+    "python3": "python",
+    "python2": "python",
+    "bash": "bash",
+    "sh": "bash",
+    "zsh": "bash",
+    "ksh": "bash",
+    "node": "javascript",
+    "nodejs": "javascript",
+    "ts-node": "typescript",
+    "tsx": "typescript",
+    "mariadb": "sql",
+    "mysql": "sql",
+    "sqlite3": "sql",
+    "ruby": "ruby",
+    "irb": "ruby",
+    "perl": "perl",
+    "php": "php",
+    "lua": "lua",
+}
 
 
 def die(msg: str) -> None:
@@ -110,6 +144,52 @@ def find_wrapper(binary: str) -> Optional[Path]:
     return None
 
 
+def get_lexer(binary: str, filename: str) -> str:
+    """Map binary basename to pygmentize lexer."""
+    basename = Path(binary).name
+    lexer = LEXER_MAP.get(basename, "")
+
+    # If no lexer found, try to guess from filename
+    if not lexer and shutil.which("pygmentize"):
+        try:
+            result = subprocess.run(
+                ["pygmentize", "-N", filename],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                lexer = result.stdout.strip()
+        except (subprocess.SubprocessError, OSError):
+            pass
+
+    return lexer or "text"
+
+
+def highlight(code: str, lexer: str) -> str:
+    """Syntax highlight code using pygmentize if available."""
+    if lexer == "text" or not shutil.which("pygmentize"):
+        return code
+
+    try:
+        result = subprocess.run(
+            ["pygmentize", "-l", lexer],
+            input=code,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.rstrip("\n")
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return code
+
+
+def separator() -> str:
+    """Return separator line."""
+    return f"{DIM}─────────────────────────────────────────{RESET}"
+
+
 def split_blocks_blank_lines(content: str) -> list[str]:
     """Split content into blocks separated by blank lines."""
     blocks = []
@@ -153,6 +233,37 @@ def split_blocks_hierarchical(content: str) -> list[str]:
     return blocks
 
 
+def process_output(
+    output: str,
+    blocks: list[str],
+    lexer: str,
+    show_block_numbers: bool,
+) -> None:
+    """Process wrapper output, replacing markers with highlighted code."""
+    marker_pattern = re.compile(rf"^{re.escape(MARKER)}\{{(\d+)\}}{re.escape(MARKER)}$")
+
+    # Use split('\n') instead of splitlines() because splitlines() treats
+    # the \x1d marker character as a line separator
+    for line in output.split("\n"):
+        match = marker_pattern.match(line)
+        if match:
+            idx = int(match.group(1))
+            block_num = idx + 1
+
+            # Print header (only if enabled)
+            if show_block_numbers:
+                print(f"{CYAN}# Block {block_num}{RESET}")
+
+            # Print highlighted code
+            print(highlight(blocks[idx], lexer))
+
+            # Print separator
+            print(separator())
+        else:
+            # Pass through as-is
+            print(line)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a script block-by-block, showing output after each block.",
@@ -173,6 +284,11 @@ Config search paths:
         "--hierarchical",
         action="store_true",
         help="Use '## ' headers to separate blocks instead of blank lines",
+    )
+    parser.add_argument(
+        "--show-block-numbers",
+        action="store_true",
+        help='Show "# Block N" headers before each block',
     )
 
     args = parser.parse_args()
@@ -217,10 +333,28 @@ Config search paths:
     if not blocks:
         die("no blocks found in script")
 
-    # Execute wrapper with blocks
-    # Using exec to replace the current process
+    # Get lexer for syntax highlighting
+    lexer = get_lexer(binary, args.script)
+
+    # Print file header
+    print(f"{BOLD}{args.script}{RESET}")
+    print(f"{DIM}{shebang}{RESET}")
+    print()
+
+    # Execute wrapper and process output
     wrapper_args = [str(wrapper), "--binary", binary, "--"] + blocks
-    os.execv(str(wrapper), wrapper_args)
+
+    try:
+        result = subprocess.run(
+            wrapper_args,
+            capture_output=True,
+            text=True,
+        )
+        output = result.stdout + result.stderr
+    except (subprocess.SubprocessError, OSError) as e:
+        die(f"failed to run wrapper: {e}")
+
+    process_output(output, blocks, lexer, args.show_block_numbers)
 
 
 if __name__ == "__main__":

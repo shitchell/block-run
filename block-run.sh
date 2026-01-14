@@ -43,15 +43,21 @@ RESET=$'\e[0m'
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] <script>
+       $(basename "$0") [options] <wrapper> <script>
 
 Run a script block-by-block, showing output after each block.
 Blocks are separated by blank lines.
 
-Options:
-  --hierarchical    Use '## ' headers to separate blocks instead of blank lines
-  --help            Show this help message
+Can be used as a shebang:
+  #!/path/to/block-run sqlite3
 
-The interpreter is determined from the shebang line.
+Options:
+  --hierarchical       Use '## ' headers to separate blocks instead of blank lines
+  --show-block-numbers Show "# Block N" headers before each block
+  --help               Show this help message
+
+The interpreter is determined from the shebang line, or from the <wrapper>
+argument if provided.
 
 Wrapper search paths:
 $(for d in "${WRAPPER_DIRS[@]}"; do echo "  - $d"; done)
@@ -126,20 +132,27 @@ find_wrapper() {
 # Map binary basename to pygmentize lexer
 get_lexer() {
     local binary="$1"
+    local filename="$2"
     local basename="${binary##*/}"
+    local lexer
 
     case "$basename" in
-        python|python3|python2) echo "python" ;;
-        bash|sh|zsh|ksh)        echo "bash" ;;
-        node|nodejs)            echo "javascript" ;;
-        ts-node|tsx)            echo "typescript" ;;
-        mariadb|mysql|sqlite3)  echo "sql" ;;
-        ruby|irb)               echo "ruby" ;;
-        perl)                   echo "perl" ;;
-        php)                    echo "php" ;;
-        lua)                    echo "lua" ;;
-        *)                      echo "text" ;;
+        python|python3|python2) lexer="python" ;;
+        bash|sh|zsh|ksh)        lexer="bash" ;;
+        node|nodejs)            lexer="javascript" ;;
+        ts-node|tsx)            lexer="typescript" ;;
+        mariadb|mysql|sqlite3)  lexer="sql" ;;
+        ruby|irb)               lexer="ruby" ;;
+        perl)                   lexer="perl" ;;
+        php)                    lexer="php" ;;
+        lua)                    lexer="lua" ;;
+        *)                      lexer="text" ;;
     esac
+    
+    # If a lexer was not found, try to guess it from the filename
+    [[ -z "$lexer" ]] && lexer=$(pygmentize -N "$filename")
+    
+    echo "$lexer"
 }
 
 # Syntax highlight code
@@ -226,7 +239,8 @@ split_blocks_hierarchical() {
 # Process wrapper output, handling chunk display markers
 process_output() {
     local lexer="$1"
-    shift
+    local show_numbers="$2"
+    shift 2
     local blocks=("$@")
 
     local marker_regex="^${MARKER}\{([0-9]+)\}${MARKER}$"
@@ -236,8 +250,10 @@ process_output() {
             local idx="${BASH_REMATCH[1]}"
             local block_num=$((idx + 1))
 
-            # Print header
-            echo "${CYAN}# Block ${block_num}${RESET}"
+            # Print header (only if enabled)
+            if [[ "$show_numbers" == true ]]; then
+                echo "${CYAN}# Block ${block_num}${RESET}"
+            fi
 
             # Print highlighted code
             highlight "${blocks[$idx]}" "$lexer"
@@ -253,13 +269,20 @@ process_output() {
 
 main() {
     local script=""
+    local wrapper_hint=""
     local split_mode="blank_lines"
+    local show_block_numbers=false
+    local -a positional=()
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --hierarchical)
                 split_mode="hierarchical"
+                shift
+                ;;
+            --show-block-numbers)
+                show_block_numbers=true
                 shift
                 ;;
             --help|-h)
@@ -269,35 +292,68 @@ main() {
                 die "unknown option: $1"
                 ;;
             *)
-                [[ -z "$script" ]] || die "multiple scripts specified"
-                script="$1"
+                positional+=("$1")
                 shift
                 ;;
         esac
     done
 
-    [[ -n "$script" ]] || die "no script specified"
-    [[ -f "$script" ]] || die "script not found: $script"
-
-    # Read shebang
-    local shebang
-    shebang=$(head -1 "$script")
-    [[ "$shebang" =~ ^#! ]] || die "no shebang found in $script"
-
-    # Parse binary from shebang
-    local binary
-    binary=$(parse_shebang "$shebang")
-    [[ -n "$binary" ]] || die "could not parse shebang: $shebang"
-
-    # Find wrapper
-    local wrapper
-    if ! wrapper=$(find_wrapper "$binary"); then
-        die "no wrapper found for: $binary (basename: ${binary##*/})"
+    # Determine wrapper_hint vs script
+    if [[ ${#positional[@]} -eq 1 ]]; then
+        # block-run script.py
+        script="${positional[0]}"
+    elif [[ ${#positional[@]} -eq 2 ]]; then
+        if [[ -f "${positional[0]}" ]]; then
+            # First arg is a file - probably a mistake
+            die "multiple scripts specified: ${positional[*]}"
+        else
+            # block-run sqlite3 script.sql (shebang-style)
+            wrapper_hint="${positional[0]}"
+            script="${positional[1]}"
+        fi
+    elif [[ ${#positional[@]} -eq 0 ]]; then
+        die "no script specified"
+    else
+        die "too many arguments: ${positional[*]}"
     fi
 
-    # Read content (skip shebang)
+    [[ -f "$script" ]] || die "script not found: $script"
+
+    local binary=""
+    local wrapper=""
+    local shebang=""
+
+    if [[ -n "$wrapper_hint" ]]; then
+        # Wrapper specified directly (shebang-style invocation)
+        binary="$wrapper_hint"
+        if ! wrapper=$(find_wrapper "$wrapper_hint"); then
+            die "no wrapper found for: $wrapper_hint"
+        fi
+        # Use actual shebang if present, otherwise synthetic
+        shebang=$(head -1 "$script")
+        [[ "$shebang" =~ ^#! ]] || shebang="#!/usr/bin/env $wrapper_hint"
+    else
+        # Read shebang from script
+        shebang=$(head -1 "$script")
+        [[ "$shebang" =~ ^#! ]] || die "no shebang found in $script"
+
+        binary=$(parse_shebang "$shebang")
+        [[ -n "$binary" ]] || die "could not parse shebang: $shebang"
+
+        if ! wrapper=$(find_wrapper "$binary"); then
+            die "no wrapper found for: $binary (basename: ${binary##*/})"
+        fi
+    fi
+
+    # Read content (skip shebang if present)
     local content
-    content=$(tail -n +2 "$script")
+    local first_line
+    first_line=$(head -1 "$script")
+    if [[ "$first_line" =~ ^#! ]]; then
+        content=$(tail -n +2 "$script")
+    else
+        content=$(cat "$script")
+    fi
 
     # Split into blocks
     local blocks=()
@@ -315,7 +371,7 @@ main() {
 
     # Get lexer for syntax highlighting
     local lexer
-    lexer=$(get_lexer "$binary")
+    lexer=$(get_lexer "$binary" "$script")
 
     # Print file header
     echo "${BOLD}${script}${RESET}"
@@ -323,20 +379,20 @@ main() {
     echo
 
     # Dispatch to wrapper and process output
-    # Check if wrapper can be executed by the target binary by examining its shebang
+    # If wrapper is written in the same language as the script, invoke via that binary
+    # Otherwise (e.g., bash wrapper for SQL), invoke the wrapper directly
     local wrapper_shebang
     wrapper_shebang=$(head -1 "$wrapper")
     local wrapper_binary
     wrapper_binary=$(parse_shebang "$wrapper_shebang")
 
-    if [[ "${wrapper_binary##*/}" == "${binary##*/}" ]] || \
-       [[ "$wrapper_binary" == "$binary" ]]; then
-        # Wrapper is written in the target language - invoke with target binary
-        process_output "$lexer" "${blocks[@]}" < <("$binary" "$wrapper" -- "${blocks[@]}" 2>&1)
-    else
-        # Wrapper is a different language (e.g., bash wrapper for SQL)
-        process_output "$lexer" "${blocks[@]}" < <("$wrapper" -- "${blocks[@]}" 2>&1)
-    fi
+    local -a invocation=()
+    [[ "${wrapper_binary##*/}" == "${binary##*/}" || "$wrapper_binary" == "$binary" ]] \
+        && [[ -z "$wrapper_hint" ]] \
+        && invocation+=("$binary")
+    invocation+=("$wrapper")
+
+    process_output "$lexer" "$show_block_numbers" "${blocks[@]}" < <("${invocation[@]}" -- "${blocks[@]}" 2>&1)
 }
 
 main "$@"
